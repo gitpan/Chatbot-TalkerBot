@@ -1,0 +1,324 @@
+README
+
+These modules allow you to build a client for a talker. If you don't know what
+a talker is, it's a chat system that requires nothing more complex than 
+telnet access. You connect, log in, and whatever you type is what you say.
+Commands are prefixed by special characters or sequences (e.g. '.quit' logs
+you out, '> fred hello' whispers 'hello' to the person on the talker called 
+fred, etc)
+
+examplebot.plx is a worked example of a bot. It assumes you have a NUTS-like
+talker running on localhost:5000 - which is what I have. The configuration
+is in examplebot.cfg
+
+Here comes the documentation bit...
+
+NAME
+    Chatbot::TalkerBot - A robot client for a talker, with command handling
+
+SYNOPSIS
+            use Chatbot::TalkerBot;
+            my $talker = new Chatbot::TalkerBot( $alreadyConnectedSocket, {
+                    Username => 'bot', Password => 'bot',
+                    UsernamePrompt => 'Enter username', PasswordPrompt => 'Enter password',
+                    UsernameResponse => '<USER>', PasswordResponse => '<PASS>',
+                    LoginSuccess => 'End of MOTD', LoginFail => 'Incorrect password'
+            } );
+        
+            $talker->setTalkerCommands( { Say => '', Shout => '! '} );
+            $talker->say( "Hello world" );
+            $talker->listenLoop( qr/TELL (\w+)\s*>(.*)/, \&callback, 10 );
+            $talker->whisper( 'david', 'bye bye' );
+            $talker->quit;
+
+DESCRIPTION
+    Creates a TalkerBot object which can be used to say (or shout, or emote,
+    etc.) things to a talker, it can listen to the talker, or it can sit in
+    an event loop waiting to hear lines of a certain format which it will
+    then act upon. Additionally it makes all talker traffic that it hears
+    available for whatever purpose you want. It also incorporates detailed
+    tracing and action logging should you require it.
+
+BACKGROUND
+    The usual talker system is where you telnet in, authenticate with
+    username and password, and simply type things to 'say' them. You prefix
+    your speech with special characters in order to shout it, tell it to a
+    single person, etc. Robot talker clients can be used to provide an
+    interface to databases, other talkers, what's on TV now, or anything you
+    can think of. This projects grew out of a live status-monitoring bot.
+
+STEP 1 - NETWORK CONNECTION
+    You need to connect to the remote host somehow, and end up with an
+    IO::Socket object connected to the talker host waiting to log in - i.e.
+    the connection has _just_ opened. There are two static, exported
+    functions that can help you with this:
+
+            $socket = connect_directly( $talkerhost, $talkerport );
+            $socket = connect_through_firewall( $firehost, $fireport, $fireprompt, $firecommand, $talkerhost, $talkerport );
+        
+    In the latter, $firecommand is a string such as 'connect <HOST> <PORT>'
+    - where the actual values are substituted in. These both die if
+    connection is unsuccessful. Hence, if you get back an IO::Socket object
+    from these then you must have connected to your destination.
+
+    Or make a connected IO::Socket object yourself. Now that you've
+    connected to the talker you need to go all object oriented...
+
+STEP 2 - TALKER OBJECT CREATION
+    You need to make a new talkerbot object with that socket.
+    UsernameResponse and PasswordResponse will be strings like '<USER>' and
+    '<PASS>' for talkers that want such things after individual prompts. If
+    your talker just prompts for 'username and password on the same line'
+    just set UsernamePrompt to whatever that last line is, set
+    UsernameResponse to '<USER> <PASS>' (with the pointy brackets) and
+    ignore the Password(Prompt|Response) entries, as there is no Password
+    prompt or response.
+
+    Note that the login is done in line-oriented mode. If your talker login
+    prompts do not end in a newline then the login stage will hang, trying
+    to read a full line. See the additional options below for a solution.
+
+            my $talker = new TalkerBot( $socket,  
+                    {       Username => $user,
+                            Password => $pass,
+                            UsernamePrompt => $TALK_USER_PROMPT,
+                            PasswordPrompt => $TALK_PASS_PROMPT,
+                            UsernameResponse => $TALK_USER_RESPONSE, 
+                            PasswordResponse => $TALK_PASS_RESPONSE,
+                            LoginSuccess => $TALK_OK,
+                            LoginFail => $TALK_FAIL
+                    }
+            );
+        
+    ADDITIONAL OPTIONS: Aswell as those options you can add these if you
+    want:
+
+    *   AlreadyLoggedIn => 1 - this indicates that the $socket is a socket
+        that has ALREADY logged in to the talker - i.e. it is READY TO TALK.
+        Use this if your talker has a login procedure that we can't handle
+        using our *Prompt and *Response syntax - log in yourself and then
+        pass us the socket.
+
+    *   NoCommands => 1 - in listenLoop() the robot should not respond to
+        any commands. See the COMMANDS bit below.
+
+    If your bot will be executing commands you may want to use the
+    authentication features:
+
+            $talker->setAuthentication( $cryptedpassword, { pkent => 1, johna => 1 });
+
+    Some commands require passwords or are only available to certain users.
+    This method sets the password (you give it the crypted form) and a group
+    of people who are also considered trusted. Some commands require
+    passwords, whereas some will let people in the admin group get away with
+    entering a wrong password and will still allow them access, and others
+    may not take passwords at all, but will only work for admin users.
+
+    You may want to tell the talkerbot about the commands it needs to use on
+    this talker, although the defaults should be ok for many talkers. You
+    use it like this:
+
+            $talker->setTalkerCommands( { Say => '', Shout => '! '} );
+
+    The full command set is: Tell Say Emote PEmote REmote PREmote SayList
+    EmoteList PEmoteList Shout Quit
+
+INTERACTION
+    In all of these cases, the bot will supply the newline after each item
+    of text.
+
+    $talker->say( $text [, $text2 ... ] );
+        Says some text out loud, in whatever group you happen to be in.
+
+    $talker->whisper( $person, $text [, $text2 ... ] );
+        Whisper/tell some text to somebody.
+
+    $talker->emote( $text [, $text2 ... ] ); $talker->pemote( $text [,
+    $text2 ... ] ); $talker->remote( $person, $text [, $text2 ... ] );
+    $talker->premote( $person, $text [, $text2 ... ] );
+        From the above, you can guess how these work.
+
+    $talker->saylist( $list, $text [, $text2 ... ] ); $talker->emotelist(
+    $list, $text [, $text2 ... ] ); $talker->pemotelist( $list, $text [,
+    $text2 ... ] );
+        And similarly for these, for talking to lists on some talkers.
+
+    $talker->shout( $text );
+        And note this only shouts one line of text. It just seemed wrong to
+        allow arbitrarily long shouts.
+
+    $talker->chant( $text );
+        The bot will send to the talker exactly what you tell it... useful
+        for getting it to change groups, lock its group, change .info and
+        that sort of thing that may require exact commands.
+
+    $lineOfText = $talker->listenOnce;
+        Tells the talker object to listen, and returns when we have a single
+        line of text. Returns the line that was heard, with no
+        newlines/carriage returns.
+
+    $talker->listenLoop( $matchre, \&callback [, $interrupt ] );
+        Go into an event loop and listen out for lines matching the regexp
+        $matchre. That regexp must have parentheses such that $1 is the
+        speaker's name, and $2 is the full text of what they said.
+
+        You will probably want to set the regexp so that the bot only
+        listens to things whispered to it.
+
+        You must provide a code reference for a subroutine that is called
+        whenever a matching line is heard. The sub will be called with
+        ($talker, $person, $command, @args) where @args is whatever they
+        said to the bot split on whitespace. If you need a single string
+        just join() the array back up.
+
+        If you provide an $interrupt variable then the bot will _also_ call
+        the callback with arguments of ( $talker, 'ALRM' ) after every
+        $interrupt seconds of inactivity. NOTE that this usually means that
+        the talker must be totally quiet for $interrupt seconds.
+
+    $talker->authenticate( $password [, $person ] );
+        Returns 1 if the password is the right password, or if the person is
+        on the admin group, 0 otherwise. Note that the methods in this
+        package do not do any authentication - that's up to the controlling
+        program.
+
+MISC
+    $talker->installCommandHelp( $commandname, \@linesOfHelpText );
+        Installs a load of help text for the named command. Usual idiom is:
+
+                $talker->installCommandHelp( 'foo',  ['Syntax: foo <number>', 'Returns the foo function'] );
+
+        This method actually passes through to the talkerbot's
+        Chatbot::TalkerBotCommands object, which registers the help
+        internally for use by its builtin 'help' command handler. Only use
+        this if you're using external commands (see below).
+
+    TB_LOG( 'some text' ); - not autoexported, say: import
+    Chatbot::TalkerBot qw/TB_LOG/;
+        Logs whatever string you give it. Default action is to send to
+        STDOUT with a timestamp, but you can override this sub. Important
+        goings-on inside the bot are logged using this sub.
+
+    TB_TRACE( 'debugging text' ); - not autoexported, say: import
+    Chatbot::TalkerBot qw/TB_TRACE/;
+        Logs whatever you give it only if $Chatbot::TalkerBot::TRACING is 1.
+        Default action is to send to STDOUT with a timestamp, but you can
+        override this sub. Pretty much everything that happens inside the
+        bot is traced using this function - very useful in debugging and
+        testing. NOTE that $TRACING is set to 0 by default.
+
+    TB_TRAFFIC( 'blah blah' ); - not exported.
+        This subroutine is called with every line of text (with no newline)
+        that the talker hears, no matter what it is. By default this sub
+        just calls TB_LOG, but you can override this sub. Not exported as it
+        should just be used for talker traffic.
+
+    OVERRIDING SUBROUTINES: In your controlling program you can add a line
+    like this:
+
+            *Chatbot::TalkerBot::TB_TRAFFIC = \&my_traffic_logger;
+
+    which will make the bot send all traffic that it hears to your
+    subroutine where you can do what you want with it.
+
+COMMANDS - INTERNAL AND EXTERNAL
+    When the bot is in listenLoop() and it hears a line matching the regexp
+    it splits whatever the person said into a list of words, and takes the
+    first word to be the command name. Some commands are handled internally,
+    but if the command given is not an internal command then the callback
+    function is called.
+
+    For example, the command 'help' is handled internally - you ask for help
+    by, for example, whispering 'help' to the bot (which would mean typing
+    '> statusbot help' on many talkers). A good default regexp should only
+    listen to whispers, so any commands must be given to the bot via a
+    whisper.
+
+    A well-behaved callback will whisper any response to the person who
+    originally whispered to the bot, and not say things out loud, and
+    additionally it will say if a requested command doesn't exist.
+
+    Internal commands are actually handled by a Chatbot::TalkerBotCommands
+    object. See the docs for that module to find out what it can handle.
+
+    If you want a bot that does not respond to ANY commands being whispered
+    at it you can pass in NoCommands => 1 as part of that hash of options.
+
+    If you only want your bot to respond to the internal commands, and not
+    try to run a callback (you're probably using it to quietly log all
+    talker traffic) then just pass in 'undef' instead of a callback ref to
+    listenLoop.
+
+PERSISTENT DATA
+    $talker->{'Prefs'} is a hashref that allows all commands to store their
+    own persistent data, for whatever reason they like. To avoid namespace
+    clashes commands MUST put their data under a key that is exactly the
+    same as their command name, e.g. the die command puts some state data in
+    $talker->{'Prefs'}->{'die'}
+
+BUGS
+    Everything's done in line-oriented mode. This could be a problem if the
+    login prompts for your talker do not end with a newline because the
+    login part will hang.
+
+VERSION
+    P Kent pause@selsyn.co.uk
+
+    $Id: README,v 1.3 2001/12/19 05:57:03 piers Exp $
+
+NAME
+    Chatbot::TalkerBotCommands - Some builtin command handling for the
+    TalkerBot to use
+
+SYNOPSIS
+            my $handler = new Chatbot::TalkerBotCommands;
+            $boolean = $handler->isCommand( 'help' );
+            $rv = $handler->doCommand( $talker, $person, $command, @args );
+            $handler->installCommandHelp( 'foo',  ['Syntax: foo <number>', 'Returns the foo function'] );
+
+    $rv is 0 unless the command wants to stop the bot, in which case a
+    return value of 1 will kill the bot. Hence, almost all commands should
+    return 0.
+
+    $talker in the above should be a Chatbot::TalkerBot object.
+
+DESCRIPTION
+    This module is intended to be used from inside Chatbot::TalkerBot, and
+    not directly by anyone. It has only three object methods - one that
+    discovers whether a command is handled by this module, one actually runs
+    the command, and one is used to install help information for use by the
+    'help' builtin command handler.
+
+    See Chatbot::TalkerBot docs section COMMANDS - INTERNAL AND EXTERNAL, to
+    see when this object is called upon to handle a command.
+
+BUILTIN COMMANDS
+    help
+        The most basic command. If called with no args (e.g. a user typed '>
+        talkerbot help') it returns a minimal help syntax message; if called
+        with the argument 'commands' if whispers back the full list of
+        available commands (well, all commands that have been registered
+        with installCommandHelp); else it tries to return help for the
+        command whose name is the given argument. E.g. '> talkerbot help
+        foo' returns help for the foo command.
+
+    version
+        Returns version number and some basic stats - age, I/O amounts - for
+        the talkerbot object.
+
+    process
+        Return information about the talkerbot's controlling process -
+        memory usage and pid.
+
+    echo <password> <some text>
+        Requires that the first argument is a password, although if your
+        talkerbot has an admin group defined members of that group can enter
+        the wrong password. This command forces the bot to say something.
+
+    die <password>
+        Requires a correct password. Makes the bot gracefully leave the
+        event loop.
+
+VERSION
+    $Id: README,v 1.3 2001/12/19 05:57:03 piers Exp $
+
